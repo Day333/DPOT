@@ -131,3 +131,13 @@ python -m pip install timm einops tensorboard
   year={2024}
 }
 ```
+
+
+export HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli download pdearena/NavierStokes-2D-conditoned  --repo-type dataset --local-dir ./NavierStokes-2D-conditoned
+huggingface-cli download pdearena/NavierStokes-2D  --repo-type dataset --local-dir ./NavierStokes-2D
+huggingface-cli download chen-yingfa/CFDBench  --repo-type dataset --local-dir ./CFDBench
+
+
+
+https://drive.google.com/file/d/1XuApoADS4Qt5J35F7QmBCm5SKpR9227z/view?usp=sharing

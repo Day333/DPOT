@@ -318,7 +318,3 @@ DATASET_DICT[name]['t_total'] = 88
 DATASET_DICT[name]['in_size'] = (96, 192)
 DATASET_DICT[name]['n_channels'] = 5
 DATASET_DICT[name]['downsample'] = (1, 1)
-
-
-
-pd.DataFrame(DATASET_DICT).to_csv('dataset_config.csv')

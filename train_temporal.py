@@ -101,7 +101,12 @@ train_paths = args.train_paths
 test_paths = args.test_paths
 args.data_weights = [1] * len(args.train_paths) if len(args.data_weights) == 1 else args.data_weights
 print('args',args)
-
+print("train_paths: ", train_paths)
+print("test_paths: ", test_paths)
+print("args.data_weights: ", args.data_weights)
+# args.data_weights:  [1]
+# raise ValueError("hahahah")
+print("args.ntrain_list: ", args.ntrain_list)
 
 train_dataset = MixedTemporalDataset(args.train_paths, args.ntrain_list, res=args.res, t_in = args.T_in, t_ar = args.T_ar, normalize=False,train=True, data_weights=args.data_weights)
 test_datasets = [MixedTemporalDataset(test_path, res=args.res, n_channels = train_dataset.n_channels,t_in = args.T_in, t_ar=-1, normalize=False, train=False) for i, test_path in enumerate(test_paths)]
@@ -109,6 +114,10 @@ train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_
 test_loaders = [torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,num_workers=8) for test_dataset in test_datasets]
 ntrain, ntests = len(train_dataset), [len(test_dataset) for test_dataset in test_datasets]
 print('Train num {} test num {}'.format(train_dataset.n_sizes, ntests))
+print('Train num {} test num {}'.format(train_dataset.data_weights, ntests))
+
+# raise ValueError("hahahah")
+
 ################################################################
 # load model
 ################################################################
@@ -156,6 +165,8 @@ else:
     raise NotImplementedError
 
 comment = args.comment + '_{}_{}'.format(len(train_paths), ntrain)
+print(train_paths, ntrain)
+# raise ValueError("hahahah")
 log_path = './logs/' + time.strftime('%m%d_%H_%M_%S') + comment if len(args.log_path)==0  else os.path.join('./logs',args.log_path + comment)
 model_path = log_path + '/model.pth'
 if args.use_writer:
@@ -163,13 +174,13 @@ if args.use_writer:
     fp = open(log_path + '/logs.txt', 'w+',buffering=1)
     json.dump(vars(args), open(log_path + '/params.json', 'w'),indent=4)
     sys.stdout = fp
-
 else:
     writer = None
 
+# raise ValueError("hahahah")
 print(model)
 count_parameters(model)
-
+# raise ValueError("hahahah")
 ################################################################
 # Main function for pretraining
 ################################################################
@@ -195,6 +206,12 @@ for ep in range(args.epochs):
         yy = yy.to(device)  ## B, n, n, T_ar, C
         msk = msk.to(device)
         cls = cls.to(device)
+        # print("xx: ", xx.shape)
+        # print("yy: ", yy.shape)
+        # print("msk: ", msk.shape)
+        # print("cls: ", cls.shape)
+
+        # raise ValueError("hahahah")
 
 
         ## auto-regressive training loop, support 1. noise injection, 2. long rollout backward, 3. temporal bundling prediction

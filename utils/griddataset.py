@@ -22,7 +22,14 @@ from utils.utilities import downsample, resize
 
 
 
-
+# MixedTemporalDataset(args.train_paths, 
+            # args.ntrain_list, 
+            # res=args.res, 
+            # t_in = args.T_in, 
+            # t_ar = args.T_ar, 
+            # normalize=False,
+            # train=True, 
+            # data_weights=args.data_weights)
 
 class MixedTemporalDataset(Dataset):
     # _num_datasets = 0
@@ -92,6 +99,9 @@ class MixedTemporalDataset(Dataset):
         :return:  H', W', T', C'
         '''
         H, W, T, C = x.shape
+        # print("x: ", x.shape)
+        # raise ValueError
+        # Bilinear Interpolation
         x = x.view(H, W, -1).permute(2, 0, 1) # Cmax, H, W
         x = F.interpolate(x.unsqueeze(0), size=(self.res, self.res),mode='bilinear').squeeze(0).permute(1, 2, 0)
         x = x.view(*x.shape[:2], T, C)

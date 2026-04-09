@@ -363,15 +363,19 @@ class DPOTNet(nn.Module):
     ### in/out: B, X, Y, T, C
     def forward(self, x):
         B, _, _, T, _ = x.shape
+        # [Batch, X, Y, T, C]
         if self.normalize:
             mu, sigma = x.mean(dim=(1,2,3),keepdim=True), x.std(dim=(1,2,3),keepdim=True) + 1e-6    # B,1,1,1,C
             x = (x - mu)/ sigma
             scale_mu = self.scale_feats_mu(torch.cat([mu, sigma],dim=-1)).squeeze(-2).permute(0,3,1,2)   #-> B, C, 1, 1
             scale_sigma = self.scale_feats_sigma(torch.cat([mu, sigma], dim=-1)).squeeze(-2).permute(0, 3, 1, 2)
 
-
+        # print("x: ", x.shape)
         grid = self.get_grid_3d(x)
+        # print("grid: ", grid.shape)
         x = torch.cat((x, grid), dim=-1).contiguous() # B, X, Y, T, C+3
+        # print("x after: ", x.shape)
+        # raise ValueError
         x = rearrange(x, 'b x y t c -> (b t) c x y')
         x = self.patch_embed(x)
 
