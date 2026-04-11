@@ -1,477 +1,212 @@
 #!/usr/bin/env python  
 #-*- coding:utf-8 _*-
-import pickle
-import numpy as np
 import os
-import random
-import scipy
-import scipy.io
+import sys
+
+# 【完美路径修复】绝对可靠地把项目根目录加入环境变量
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import h5py
-from tqdm import tqdm
+import scipy.io
+import numpy as np
 import torch
-import os
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 from pathlib import Path
+from tqdm import tqdm
+
+# 直接导入，不加 try...except，如果有缺依赖包(比如少装了什么库)会直接明明白白地报出来
 from data_generation.cfdbench import get_auto_dataset
 
+RAW_DIR = '/mnt/9944/PDE'
+SAVE_DIR = '/tmp/data'
 
+def check_exists(paths):
+    """检查目标路径是否都已经存在，用于跳过已处理的数据"""
+    return all(os.path.exists(p) for p in paths)
 
-def preprocess_mat():
-    data = h5py.File('/home/haozhongkai/files/ml4phys/mgn/pdessl/data/ns2d/ns_V1e-3_N5000_T50.mat')
-    data = np.array(data['u'])
-    data = np.transpose(data, (3,1,2,0))
-    train_u = data[:4800]
-    test_u = data[4800:]
-    print(train_u.shape, test_u.shape)
-    pickle.dump(train_u, open('/home/haozhongkai/files/ml4phys/mgn/pdessl/data/ns2d/ns2d_1e-3_train.pkl','wb'))
-    pickle.dump(test_u, open('/home/haozhongkai/files/ml4phys/mgn/pdessl/data/ns2d/ns2d_1e-3_test.pkl','wb'))
+def load_mat_robust(file_path):
+    """鲁棒地读取 mat 文件，自适应 h5py 和 scipy 的不同读取轴顺序"""
+    try:
+        # h5py 读取时形状会倒序为 (T, Y, X, N)，需要翻转回 (N, X, Y, T)
+        with h5py.File(file_path, 'r') as f:
+            return np.array(f['u'], dtype=np.float32).transpose(3, 1, 2, 0)
+    except Exception as e_h5:
+        try:
+            # scipy 读取时直接就是原本的 (N, X, Y, T)，【不要】翻转
+            data = scipy.io.loadmat(file_path)['u']
+            return np.array(data, dtype=np.float32)
+        except Exception as e_scipy:
+            size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            print(f"\n[致命错误] 无法读取 {file_path}！")
+            if size_mb < 1:
+                print("--> ⚠️ 强烈警告：文件太小了！可能下载到了 HTML 网页。")
+            raise ValueError("文件格式不受支持或已损坏")
+            
+def process_fno():
+    fno_files = {
+        'ns2d_fno_1e-3': ('NavierStokes_V1e-3_N5000_T50.mat', 4800, 200),
+        'ns2d_fno_1e-4': ('NavierStokes_V1e-4_N10000_T30.mat', 9800, 200),
+        'ns2d_fno_1e-5': ('NavierStokes_V1e-5_N1200_T20.mat', 1000, 200)
+    }
+    for code_id, (fname, n_train, n_test) in fno_files.items():
+        train_path = os.path.join(SAVE_DIR, f'{code_id}_train.hdf5')
+        test_path = os.path.join(SAVE_DIR, f'{code_id}_test.hdf5')
+        if check_exists([train_path, test_path]):
+            print(f"[跳过] FNO数据 {code_id} 已处理，跳过。")
+            continue
+        mat_path = os.path.join(RAW_DIR, fname)
+        if not os.path.exists(mat_path):
+            continue
+        print(f"Processing {fname}...")
+        data = load_mat_robust(mat_path)
+        train_u, test_u = data[:n_train], data[-n_test:]
+        with h5py.File(train_path, 'w') as hf:
+            hf.create_dataset('data', data=train_u)
+        with h5py.File(test_path, 'w') as hf:
+            hf.create_dataset('data', data=test_u)
 
-
-
-
-def save_hdf5():
-    import pickle
-    import h5py
-    import os
-
-    # 文件名列表
-    file_names = [
-        "ns2d_1e-3_test.pkl", "ns2d_1e-3_train.pkl",
-        "ns2d_1e-4_test.pkl", "ns2d_1e-4_train.pkl",
-        "ns2d_1e-5_test.pkl", "ns2d_1e-5_train.pkl"
-    ]
-
-    for fname in file_names:
-        with open(os.path.join('/datasets/opb/pretrain',fname), 'rb') as f:
-            data = pickle.load(f)
-
-        hdf5_name = os.path.splitext(fname)[0] + '.hdf5'
-
-        with h5py.File(os.path.join('/datasets/opb/pretrain',hdf5_name), 'w') as hf:
-            hf.create_dataset('data', data=data)
-
-    print("Conversion completed!")
-
-
-### run with root
-def process_pdebench_data(path='/data/pdebench/164693',save_name='/data/pdebench/ns2d_pdb_M1_eta1e-8_zeta1e-8',n_train=9000, n_test=1000):
-    ### link: https://darus.uni-stuttgart.de/file.xhtml?fileId=164693&version=3.0
-    ### keys: Vx, Vy, Vz, density, pressure, t-coordinate, x-coordinate, y-coordinate, z-coordinate
-    os.mkdir(save_name)
-    os.mkdir(save_name + '/train')
-    os.mkdir(save_name + '/test' )
-    print('path created')
-    with h5py.File(path, 'r') as f:
-        keys = list(f.keys())
-        keys.sort()
-        print(keys)
-        vx = f['Vx']
-        vy = f['Vy']
-        # vz = f['Vz']
-        density = f['density']
-        pressure = f['pressure']
-        t = f['t-coordinate']
-        x = f['x-coordinate']
-        y = f['y-coordinate']
-        # z = f['z-coordinate']
-
-        vx = np.array(vx, dtype=np.float32)
-        vy = np.array(vy, dtype=np.float32)
-        # vz = np.array(vz, dtype=np.float32)
-        density = np.array(density, dtype=np.float32)
-        pressure = np.array(pressure, dtype=np.float32)
-
-        t = np.array(t, dtype=np.float32)    ###, t, x are equispaced
-        x = np.array(x, dtype=np.float32)
-        y = np.array(y, dtype=np.float32)
-        # z = np.array(z, dtype=np.float32)
-        print('Content loaded:', vx.shape, density.shape, pressure.shape, t.shape, x.shape, y.shape)
-
-        ## storage: x: u(t0), y: u(t1~t20), order: [B, T, X, Y ,C]
-        data = np.stack([vx, vy, density, pressure],axis=-1).transpose(0,2,3,1,4)
-        # X = data[:,0:1]
-        # Y = data[:,1:]
-        print(data.shape)   # B, X, Y, T, C
-    del vx, vy,  density, pressure
-
-
-    def split_data(N):
-
-        all_ids = list(range(N))
-        test_size = N // 10
-        test_ids = random.sample(all_ids, test_size)
-        train_ids = [id_ for id_ in all_ids if id_ not in test_ids]
-
-        return train_ids, test_ids
-
-    # train_ids, test_ids = split_data(10000)
-    train_ids, test_ids = np.arange(int(9/10 * data.shape[0])), np.arange(int(9/10 * data.shape[0]),data.shape[0])
-    print('train ids',train_ids)
-    print('test ids',test_ids)
-
-    for i in range(n_train):
-        with h5py.File(save_name + '/train/data_{}.hdf5'.format(i),'w') as f:
-            f.create_dataset('data', data=data[train_ids[i]], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
-    for i in range(n_test):
-        start = data.shape[0] - n_test
-        with h5py.File(save_name + '/test/data_{}.hdf5'.format(i),'w') as f:
-            f.create_dataset('data', data=data[test_ids[i]], compression=None)
-            # f.create_dataset('data', data=data[start + i], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
-
-
-    print('file saved')
-
-### Shallow water PDE
-def process_swe_pdebench(path, save_name, n_train=900, n_test=100):
-    ## t: 0~ 5, [101], x, y: -1~1. [128]
-    os.mkdir(save_name)
-    os.mkdir(save_name + '/train')
-    os.mkdir(save_name + '/test')
-    print('path created')
+def process_dr_pdebench():
+    save_name = os.path.join(SAVE_DIR, 'dr_pdb')
+    train_dir = os.path.join(save_name, 'train')
+    test_dir = os.path.join(save_name, 'test')
+    if check_exists([train_dir, test_dir]) and len(os.listdir(train_dir)) > 0:
+        print("[跳过] dr_pdb 已处理，跳过。")
+        return
+    raw_path = os.path.join(RAW_DIR, '2D_diff-react_NA_NA.h5')
+    n_train, n_test = 900, 100
+    if not os.path.exists(raw_path): return
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
     data = []
-    with h5py.File(path, 'r') as fp:
+    print(f"Processing 2D_diff-react_NA_NA.h5...")
+    with h5py.File(raw_path, 'r') as fp:
         for i in range(len(fp.keys())):
             data.append(fp["{0:0=4d}/data".format(i)])
-
-
-        data = np.stack(data, axis=0).transpose(0,2,3,1,4)  # 1000,128,128,101,2
-        print(data.shape)
-
-    train_ids, test_ids = np.arange(int(n_train)), np.arange(n_train, n_train + n_test)
-    print('train ids', train_ids)
-    print('test ids', test_ids)
-
-    for i in range(n_train):
-        with h5py.File(save_name + '/train/data_{}.hdf5'.format(i), 'w') as f:
+        data = np.stack(data, axis=0).transpose(0, 2, 3, 1, 4)
+    train_ids, test_ids = np.arange(n_train), np.arange(n_train, n_train + n_test)
+    for i in tqdm(range(n_train), desc="Saving DR Train"):
+        with h5py.File(f'{train_dir}/data_{i}.hdf5', 'w') as f:
             f.create_dataset('data', data=data[train_ids[i]], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
-    for i in range(n_test):
-        start = data.shape[0] - n_test
-        with h5py.File(save_name + '/test/data_{}.hdf5'.format(i), 'w') as f:
+    for i in tqdm(range(n_test), desc="Saving DR Test"):
+        with h5py.File(f'{test_dir}/data_{i}.hdf5', 'w') as f:
             f.create_dataset('data', data=data[test_ids[i]], compression=None)
-            # f.create_dataset('data', data=data[start + i], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
 
-    print('file saved')
-    return
-
-
-### Diffusion Reaction PDE
-def process_dr_pdebench(path, save_name, n_train=900, n_test=100):
-    ## t: 0~1, [101], x, y: -2.5~2.5 [128]
-    os.mkdir(save_name)
-    os.mkdir(save_name + '/train')
-    os.mkdir(save_name + '/test')
-    print('path created')
+def process_swe_pdebench():
+    save_name = os.path.join(SAVE_DIR, 'swe_pdb')
+    train_dir = os.path.join(save_name, 'train')
+    test_dir = os.path.join(save_name, 'test')
+    if check_exists([train_dir, test_dir]) and len(os.listdir(train_dir)) > 0:
+        print("[跳过] swe_pdb 已处理，跳过。")
+        return
+    raw_path = os.path.join(RAW_DIR, '2D_rdb_NA_NA.h5')
+    n_train, n_test = 900, 100
+    if not os.path.exists(raw_path): return
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
     data = []
-    with h5py.File(path, 'r') as fp:
+    print(f"Processing 2D_rdb_NA_NA.h5...")
+    with h5py.File(raw_path, 'r') as fp:
         for i in range(len(fp.keys())):
             data.append(fp["{0:0=4d}/data".format(i)])
-
-
-        data = np.stack(data, axis=0).transpose(0,2,3,1,4)  # 1000,128,128,101,2
-        print(data.shape)
-
-    train_ids, test_ids = np.arange(int(n_train)), np.arange(n_train, n_train + n_test)
-    print('train ids', train_ids)
-    print('test ids', test_ids)
-
-    for i in range(n_train):
-        with h5py.File(save_name + '/train/data_{}.hdf5'.format(i), 'w') as f:
+        data = np.stack(data, axis=0).transpose(0, 2, 3, 1, 4)
+    train_ids, test_ids = np.arange(n_train), np.arange(n_train, n_train + n_test)
+    for i in tqdm(range(n_train), desc="Saving SWE Train"):
+        with h5py.File(f'{train_dir}/data_{i}.hdf5', 'w') as f:
             f.create_dataset('data', data=data[train_ids[i]], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
-    for i in range(n_test):
-        start = data.shape[0] - n_test
-        with h5py.File(save_name + '/test/data_{}.hdf5'.format(i), 'w') as f:
+    for i in tqdm(range(n_test), desc="Saving SWE Test"):
+        with h5py.File(f'{test_dir}/data_{i}.hdf5', 'w') as f:
             f.create_dataset('data', data=data[test_ids[i]], compression=None)
-            # f.create_dataset('data', data=data[start + i], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
 
-    print('file saved')
-    return
-
-
-### run with root
-def process_pdebench3d_data(path,save_name,n_train=90, n_test=10):
-    ### link: https://darus.uni-stuttgart.de/file.xhtml?fileId=164693&version=3.0
-    ### keys: Vx, Vy, Vz, density, pressure, t-coordinate, x-coordinate, y-coordinate, z-coordinate
-    if not os.path.exists(save_name):
-        os.mkdir(save_name)
-    os.mkdir(save_name + '/train')
-    os.mkdir(save_name + '/test' )
-    print('path created')
-    with h5py.File(path, 'r') as f:
-        keys = list(f.keys())
-        keys.sort()
-        print(keys)
-        vx = f['Vx']
-        vy = f['Vy']
-        vz = f['Vz']
-        density = f['density']
-        pressure = f['pressure']
-        t = f['t-coordinate']
-        x = f['x-coordinate']
-        y = f['y-coordinate']
-        z = f['z-coordinate']
-
-        vx = np.array(vx, dtype=np.float32)
-        vy = np.array(vy, dtype=np.float32)
-        vz = np.array(vz, dtype=np.float32)
-        density = np.array(density, dtype=np.float32)
-        pressure = np.array(pressure, dtype=np.float32)
-
-        t = np.array(t, dtype=np.float32)    ###, t, x are equispaced
-        x = np.array(x, dtype=np.float32)
-        y = np.array(y, dtype=np.float32)
-        z = np.array(z, dtype=np.float32)
-        print('Content loaded:', vx.shape, density.shape, pressure.shape, t.shape, x.shape, y.shape)
-
-        ## storage: x: u(t0), y: u(t1~t20), order: [B, T, X, Y, Z ,C]
-        data = np.stack([vx, vy, vz, pressure, density],axis=-1).transpose(0,2,3,4,1,5)
-        # X = data[:,0:1]
-        # Y = data[:,1:]
-        print(data.shape)   # B, X, Y, T, C
-    del vx, vy,  density, pressure
-
-    def split_data(N):
-
-        all_ids = list(range(N))
-        test_size = N // 10
-        test_ids = random.sample(all_ids, test_size)
-        train_ids = [id_ for id_ in all_ids if id_ not in test_ids]
-
-        return train_ids, test_ids
-
-    # train_ids, test_ids = split_data(10000)
-    train_ids, test_ids = np.arange(int(9/10 * data.shape[0])), np.arange(int(9/10 * data.shape[0]),data.shape[0])
-    print('train ids',train_ids)
-    print('test ids',test_ids)
-
-    for i in range(n_train):
-        with h5py.File(save_name + '/train/data_{}.hdf5'.format(i),'w') as f:
+def process_ns2d_pdebench(raw_filename, code_id, n_train=9000, n_test=1000):
+    raw_path = os.path.join(RAW_DIR, raw_filename)
+    save_name = os.path.join(SAVE_DIR, code_id)
+    train_dir = os.path.join(save_name, 'train')
+    test_dir = os.path.join(save_name, 'test')
+    if check_exists([train_dir, test_dir]) and len(os.listdir(train_dir)) > 0:
+        print(f"[跳过] PDEBench数据 {code_id} 已处理，跳过。")
+        return
+    if not os.path.exists(raw_path): return
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
+    print(f"Processing {raw_filename}...")
+    with h5py.File(raw_path, 'r') as f:
+        vx = np.array(f['Vx'], dtype=np.float32)
+        vy = np.array(f['Vy'], dtype=np.float32)
+        density = np.array(f['density'], dtype=np.float32)
+        pressure = np.array(f['pressure'], dtype=np.float32)
+        data = np.stack([vx, vy, density, pressure], axis=-1).transpose(0, 2, 3, 1, 4)
+    train_ids = np.arange(n_train)
+    test_ids = np.arange(n_train, n_train + n_test)
+    for i in tqdm(range(n_train), desc=f"Saving {code_id} Train"):
+        with h5py.File(os.path.join(train_dir, f'data_{i}.hdf5'), 'w') as f:
             f.create_dataset('data', data=data[train_ids[i]], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
-    for i in range(n_test):
-        start = data.shape[0] - n_test
-        with h5py.File(save_name + '/test/data_{}.hdf5'.format(i),'w') as f:
+    for i in tqdm(range(n_test), desc=f"Saving {code_id} Test"):
+        with h5py.File(os.path.join(test_dir, f'data_{i}.hdf5'), 'w') as f:
             f.create_dataset('data', data=data[test_ids[i]], compression=None)
-            # f.create_dataset('data', data=data[start + i], compression=None)
-        print('task @ {} saved, shape {}'.format(i, data[i].shape))
 
-
-    print('file saved')
-
-
-
-
-def preprocess_ns2d(load_path='data/large/pdearena/NavierStokes-2D',
-                    save_path='data/large/pdearena/ns2d_pda'):
-    """
-    Preprocess the Navier-Stokes 2D dataset from PDEArena
-
-    there are 3 channels in the dataset:
-        u, vx, vy
-    data shape: (N, 128, 128, 14, 3)
-    """
-    LOAD_PATH = load_path
-    SAVE_PATH_TEST = save_path + '/test'
-    SAVE_PATH_TRAIN = save_path + '/train'
-
-    # Create new folders if SAVE_PATH does not exist
-    os.makedirs(SAVE_PATH_TEST, exist_ok=True)
-    os.makedirs(SAVE_PATH_TRAIN, exist_ok=True)
-
-    test_tot = 0
-    train_tot = 0
-
-    # Traverse the file in LOAD_PATH
-    for root, dirs, files in os.walk(LOAD_PATH):
-        for file in tqdm(files):
-            # Skip the file if it is not a HDF5 file
-            if not file.endswith('.h5'):
-                continue
-            # Open the file
+def preprocess_pdearena(folder_name, save_folder):
+    load_path = os.path.join(RAW_DIR, folder_name)
+    save_path = os.path.join(SAVE_DIR, save_folder)
+    train_dir = os.path.join(save_path, 'train')
+    test_dir = os.path.join(save_path, 'test')
+    if check_exists([train_dir, test_dir]) and len(os.listdir(train_dir)) > 0:
+        print(f"[跳过] PDEArena数据 {save_folder} 已处理，跳过。")
+        return
+    if not os.path.exists(load_path): return
+    os.makedirs(test_dir, exist_ok=True)
+    os.makedirs(train_dir, exist_ok=True)
+    test_tot, train_tot = 0, 0
+    for root, _, files in os.walk(load_path):
+        for file in tqdm(files, desc=f"Processing {folder_name}"):
+            if not file.endswith('.h5'): continue
             try:
                 with h5py.File(os.path.join(root, file), 'r') as f:
-                    if 'test' in file:
-                        key = 'test'
-                        path = SAVE_PATH_TEST
-                    elif 'train' in file:
-                        key = 'train'
-                        path = SAVE_PATH_TRAIN
-                    elif 'valid' in file:
-                        key = 'valid'
-                        path = SAVE_PATH_TRAIN
-                    else:
-                        raise ValueError('Unknown file type {}!'.format(file))
-
-                    u = f[key]['u'][:]
-                    vx = f[key]['vx'][:]
-                    vy = f[key]['vy'][:]
-
-                    out = np.stack([u, vx, vy], axis=-1)
-                    out = np.transpose(out, (0, 2, 3, 1, 4))
-
-                    # Create the destination file
+                    if 'test' in file: internal_key, target_dir = 'test', test_dir
+                    elif 'train' in file: internal_key, target_dir = 'train', train_dir
+                    elif 'valid' in file: internal_key, target_dir = 'valid', train_dir
+                    else: continue
+                    u, vx, vy = f[internal_key]['u'][:], f[internal_key]['vx'][:], f[internal_key]['vy'][:]
+                    out = np.stack([u, vx, vy], axis=-1).transpose(0, 2, 3, 1, 4)
                     for data in out:
-                        if key == 'test':
-                            idx = test_tot
-                            test_tot += 1
-                        else:
-                            idx = train_tot
-                            train_tot += 1
-                        dst_file = 'data_{}.hdf5'.format(idx)
-                        save_path = os.path.join(path, dst_file)
-                        with h5py.File(save_path, 'w') as g:
-                            # Write data as a hdf5 dataset
-                            # with key 'data'
+                        idx = test_tot if internal_key == 'test' else train_tot
+                        if internal_key == 'test': test_tot += 1
+                        else: train_tot += 1
+                        with h5py.File(os.path.join(target_dir, f'data_{idx}.hdf5'), 'w') as g:
                             g.create_dataset('data', data=data)
             except Exception as e:
-                print('Error in file {}: {}'.format(file, e))
-                continue
+                print(f'Error in file {file}: {e}')
 
+def preprocess_cfdbench():
+    """处理 CFDBench 数据集"""
+    save_dir = os.path.join(SAVE_DIR, 'cfdbench')
+    train_path = os.path.join(save_dir, 'ns2d_cdb_train.hdf5')
+    test_path = os.path.join(save_dir, 'ns2d_cdb_test.hdf5')
 
-def preprocess_ns2d_cond():
-    """
-    Preprocess the Navier-Stokes 2D conditioned
-        dataset from PDEArena
+    if check_exists([train_path, test_path]):
+        print("[跳过] CFDBench 已处理，跳过。")
+        return
 
-    there are 3 channels in the dataset:
-        u, vx, vy
-    data shape: (N, 128, 128, 56, 3)
-    """
-    preprocess_ns2d(
-        load_path='data/large/pdearena/NavierStokes-2D-conditoned',
-        save_path='data/large/pdearena/ns2d_cond_pda'
-    )
+    raw_cfdbench_dir = os.path.join(RAW_DIR, 'CFDBench')
+    if not os.path.exists(raw_cfdbench_dir):
+        print(f"[跳过] 找不到 CFDBench 原始数据目录: {raw_cfdbench_dir}，如果你还没下载请忽略。")
+        return
 
+    os.makedirs(save_dir, exist_ok=True)
+    print("Processing CFDBench...")
 
-def preprocess_shallow_water():
-    """
-    Preprocess the Shallow Water dataset from PDEArena
-
-    there are 5 channels in the dataset:
-        u, v, div, vor, pres
-    data shape: (N, 96, 192, 88, 5)
-    """
-    LOAD_PATH = 'data/large/pdearena/ShallowWater-2D'
-    SAVE_PATH_TEST = 'data/large/pdearena/sw2d_pda/test'
-    SAVE_PATH_TRAIN = 'data/large/pdearena/sw2d_pda/train'
-
-    # Create new folders if SAVE_PATH does not exist
-    os.makedirs(SAVE_PATH_TEST, exist_ok=True)
-    os.makedirs(SAVE_PATH_TRAIN, exist_ok=True)
-
-    test_tot = 0
-    train_tot = 0
-
-    # Traverse the file in LOAD_PATH
-    for root, dirs, files in tqdm(os.walk(LOAD_PATH)):
-        for file in files:
-            # Skip the file if it is not a HDF5 file
-            if not file.endswith('.nc'):
-                continue
-            # Open the file
-            try:
-                with h5py.File(os.path.join(root, file), 'r') as f:
-                    if 'test' in root:
-                        key = 'test'
-                        path = SAVE_PATH_TEST
-                    elif 'train' in root:
-                        key = 'train'
-                        path = SAVE_PATH_TRAIN
-                    elif 'valid' in root:
-                        key = 'valid'
-                        path = SAVE_PATH_TRAIN
-                    else:
-                        raise ValueError('Unknown file type {}!'.format(file))
-
-                    u = f['u'][:]
-                    u = u[:, 0, ...]
-                    v = f['v'][:]
-                    v = v[:, 0, ...]
-                    div = f['div'][:]
-                    div = div[:, 0, ...]
-                    vor = f['vor'][:]
-                    vor = vor[:, 0, ...]
-                    pres = f['pres'][:]
-
-                    data = np.stack([u, v, div, vor, pres], axis=-1)
-                    data = np.transpose(data, (1, 2, 0, 3))
-
-                    # Create the destination file
-                    if key == 'test':
-                        idx = test_tot
-                        test_tot += 1
-                    else:
-                        idx = train_tot
-                        train_tot += 1
-                    dst_file = 'data_{}.hdf5'.format(idx)
-                    save_path = os.path.join(path, dst_file)
-                    with h5py.File(save_path, 'w') as g:
-                        # Write data as a hdf5 dataset
-                        # with key 'data'
-                        g.create_dataset('data', data=data)
-            except Exception as e:
-                print('Error in file {}: {}'.format(file, e))
-                continue
-
-
-
-
-def preprocess_cfdbench_data():
-    delta_cavity = 0.1
-    delta_cylinder = 0.1
-    delta_tube = 0.1
-    delta_dam = 0.1
+    # CFDBench 原始代码依赖于传递 Path 对象
     train_data_cavity, dev_data_cavity, test_data_cavity = get_auto_dataset(
-        data_dir=Path('../../data/large/cfdbench'),
-        data_name='cavity_prop_bc_geo',
-        delta_time=0.1,
-        norm_props=True,
-        norm_bc=True,
+        data_dir=Path(raw_cfdbench_dir), data_name='cavity_prop_bc_geo', delta_time=0.1, norm_props=True, norm_bc=True
     )
     train_data_cylinder, dev_data_cylinder, test_data_cylinder = get_auto_dataset(
-        data_dir=Path('../../data/large/cfdbench'),
-        data_name='cylinder_prop_bc_geo',
-        delta_time=0.1,
-        norm_props=True,
-        norm_bc=True,
+        data_dir=Path(raw_cfdbench_dir), data_name='cylinder_prop_bc_geo', delta_time=0.1, norm_props=True, norm_bc=True
     )
-    # train_data_dam, dev_data_dam, test_data_dam = get_auto_dataset(
-    #     data_dir=Path('../../data/large/cfdbench'),
-    #     data_name='dam_prop',
-    #     delta_time=0.1,
-    #     norm_props=True,
-    #     norm_bc=True,
-    # )
     train_data_tube, dev_data_tube, test_data_tube = get_auto_dataset(
-        data_dir=Path('../../data/large/cfdbench'),
-        data_name='tube_prop_bc_geo',
-        delta_time=0.1,
-        norm_props=True,
-        norm_bc=True,
+        data_dir=Path(raw_cfdbench_dir), data_name='tube_prop_bc_geo', delta_time=0.1, norm_props=True, norm_bc=True
     )
 
-    cavity_lens = [data.shape[0] for data in train_data_cavity.all_features]
-    cylinder_lens = [data.shape[0] for data in train_data_cylinder.all_features]
-    tube_lens = [data.shape[0] for data in train_data_tube.all_features]
-    # dam_lens = [data.shape[0] for data in train_data_dam.all_features]
-
-    train_cavity_feats, train_cylinder_feats, train_tube_feats = train_data_cavity.all_features, train_data_cylinder.all_features, train_data_tube.all_features
-    test_cavity_feats, test_cylinder_feats, test_tube_feats = test_data_cavity.all_features, test_data_cylinder.all_features, test_data_tube.all_features
-
-    train_feats = train_cavity_feats + train_cylinder_feats + train_tube_feats
-    test_feats = test_cavity_feats + test_cylinder_feats + test_tube_feats
-
-
-    print(cavity_lens)
-    print(cylinder_lens)
-    print(tube_lens)
-    # print(dam_lens)
+    train_feats = train_data_cavity.all_features + train_data_cylinder.all_features + train_data_tube.all_features
+    test_feats = test_data_cavity.all_features + test_data_cylinder.all_features + test_data_tube.all_features
 
     infer_steps = 20
 
@@ -482,65 +217,45 @@ def preprocess_cfdbench_data():
             num_segments = int(np.ceil(T / time_step))
             padded_length = num_segments * time_step
             padded_array = np.zeros((padded_length, *x.shape[1:]))
-
-            # Copy the original data into the padded array
             padded_array[:T, ...] = x
-
-            # If needed, pad the last segment with the last frame of the original array
             if T % time_step != 0:
                 last_frame = x[-1, ...]
                 padded_array[T:, ...] = last_frame
-
-            # Reshape the array into segments
-            padded_array = F.interpolate(torch.from_numpy(padded_array),size=(grid_size,grid_size),mode='bilinear',align_corners=True).numpy()
+            # 使用 PyTorch 进行空间插值
+            padded_array = F.interpolate(torch.from_numpy(padded_array), size=(grid_size, grid_size), mode='bilinear', align_corners=True).numpy()
             padded_array = padded_array.reshape((num_segments, time_step, *padded_array.shape[1:]))
-
             traj_split.append(padded_array)
+        return np.concatenate(traj_split, axis=0)
 
-        traj_split = np.concatenate(traj_split, axis=0)
-        return traj_split
+    print("Splitting CFDBench trajectories and applying interpolation...")
+    train_data = split_trajectory(train_feats, infer_steps, grid_size=64)
+    test_data = split_trajectory(test_feats, infer_steps, grid_size=64)
+    
+    # 按照 [B, X, Y, T, C] 进行转置
+    train_data = train_data.transpose(0, 3, 4, 1, 2)
+    test_data = test_data.transpose(0, 3, 4, 1, 2)
+    
+    print(f"CFDBench shapes - Train: {train_data.shape}, Test: {test_data.shape}")
 
+    with h5py.File(train_path, 'w') as fp:
+        fp.create_dataset('data', data=train_data, compression=None)
 
-    train_data = split_trajectory(train_feats, infer_steps,grid_size=64)
-    test_data = split_trajectory(test_feats, infer_steps,grid_size=64)
-    train_data, test_data = train_data.transpose(0,3,4,1,2), test_data.transpose(0, 3, 4, 1, 2) # B, X, Y, T, C
-    print(train_data.shape, test_data.shape)
-
-    with h5py.File('./../data/cfdbench/ns2d_cdb_train.hdf5','w') as fp:
-        fp.create_dataset('data',data=train_data,compression=None)
-
-
-
-    with h5py.File('./../data/cfdbench/ns2d_cdb_test.hdf5','w') as fp:
-        fp.create_dataset('data',data=test_data,compression=None)
+    with h5py.File(test_path, 'w') as fp:
+        fp.create_dataset('data', data=test_data, compression=None)
 
 
 if __name__ == '__main__':
-
-
-    #### FNO datasets
-    # preprocess_mat()
-
-    #### PDEBench datasets
-    process_pdebench_data(path='./../data/164687',save_name='./../data/pdebench/ns2d_pdb_M1e-1_eta1e-2_zeta1e-2',n_train=9000, n_test=1000)
-    process_pdebench_data(path='./../data/164688',save_name='./../data/pdebench/ns2d_pdb_M1e-1_eta1e-1_zeta1e-1',n_train=9000, n_test=1000)
-    process_pdebench_data(path='./../data/164690',save_name='./../data/pdebench/ns2d_pdb_M1_eta1e-2_zeta1e-2',n_train=9000, n_test=1000)
-    process_pdebench_data(path='./../data/164691',save_name='./../data//pdebench/ns2d_pdb_M1_eta1e-1_zeta1e-1',n_train=9000, n_test=1000)
-    process_pdebench_data(path='./../data/164685',save_name='./../data/pdebench/ns2d_pdb_M1e-1_eta1e-8_zeta1e-8_turb_512',n_train=900, n_test=100)
-    process_pdebench_data(path='./../data/164686',save_name='./../data/pdebench/ns2d_pdb_M1_eta1e-8_zeta1e-8_turb_512',n_train=900, n_test=100)
-    process_pdebench_data(path='./../data/164689',save_name='./../data/pdebench/ns2d_pdb_M1e-1_eta1e-8_zeta1e-8_rand_512',n_train=900, n_test=100)
-    process_pdebench_data(path='./../data/164692',save_name='./../data/pdebench/ns2d_pdb_M1_eta1e-8_zeta1e-8_rand_512',n_train=900, n_test=100)
-    process_swe_pdebench(path='./../data/133021',save_name='./../data/pdebench/swe_pdb',n_train=900, n_test=100)
-    process_dr_pdebench(path='./../data/133017',save_name='./../data/pdebench/dr_pdb',n_train=900, n_test=100)
-    process_pdebench3d_data(path='./../data/164693',save_name='./../data/pdebench/ns3d_pdb_M1_rand',n_train=90, n_test=10)
-    process_pdebench3d_data(path='./../data/173286',save_name='./../data/pdebench/ns3d_pdb_M1e-1_rand',n_train=90, n_test=10)
-    process_pdebench3d_data(path='./../data/164694',save_name='./../data/pdebench/ns3d_pdb_M1_turb',n_train=540, n_test=60)
-
-    #### PDEArena datasets
-    preprocess_ns2d()
-    preprocess_ns2d_cond()
-    preprocess_shallow_water()
-
-
-    #### CFDBench datasets
-    preprocess_cfdbench_data()
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    print("Starting data preprocessing...")
+    
+    process_fno()
+    process_dr_pdebench()
+    process_swe_pdebench()
+    process_ns2d_pdebench('2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5', 'ns2d_pdb_M1e-1_eta1e-2_zeta1e-2')
+    process_ns2d_pdebench('2D_CFD_Rand_M1.0_Eta0.01_Zeta0.01_periodic_128_Train.hdf5', 'ns2d_pdb_M1_eta1e-2_zeta1e-2')
+    preprocess_pdearena('NavierStokes-2D', 'ns2d_pda')
+    preprocess_pdearena('NavierStokes-2D-conditoned', 'ns2d_cond_pda')
+    
+    preprocess_cfdbench()
+    
+    print(f"\n✅ 数据处理检查完毕！文件存储在 {SAVE_DIR}")

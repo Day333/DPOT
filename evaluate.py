@@ -34,11 +34,25 @@ parser = argparse.ArgumentParser(description='Training or pretraining for the sa
 parser.add_argument('--model', type=str, default='AFNO')
 parser.add_argument('--dataset',type=str, default='ns2d')
 
-parser.add_argument('--train_paths',nargs='+', type=str, default=['ns2d_pdb_M1_eta1e-1_zeta1e-1'])
-parser.add_argument('--test_paths',nargs='+',type=str, default=['ns2d_fno_1e-5','swe_pdb','dr_pdb'])
+parser.add_argument('--train_paths',nargs='+', type=str, default=[
+ 'ns2d_fno_1e-5',
+  'ns2d_fno_1e-3',
+  'ns2d_pdb_M1e-1_eta1e-2_zeta1e-2',
+  'swe_pdb',
+  'dr_pdb',
+  'cfdbench'
+])
+parser.add_argument('--test_paths',nargs='+',type=str, default=[
+ 'ns2d_fno_1e-5',
+  'ns2d_fno_1e-3',
+  'ns2d_pdb_M1e-1_eta1e-2_zeta1e-2',
+  'swe_pdb',
+  'dr_pdb',
+  'cfdbench'
+])
 parser.add_argument('--resume_path',type=str, default='/root/files/pdessl/logs_pretrain/AFNO_ns2d_1218_17_20_14:S_12_114400/model_99.pth')
-parser.add_argument('--ntrain_list', nargs='+', type=int, default=[100])
-parser.add_argument('--ntest_list',nargs='+',type=int, default=[100,50,100])
+parser.add_argument('--ntrain_list', nargs='+', type=int, default=None)
+parser.add_argument('--ntest_list',nargs='+',type=int, default=None)
 parser.add_argument('--data_weights',nargs='+',type=int, default=[1])
 parser.add_argument('--use_writer', action='store_true',default=False)
 
@@ -110,7 +124,7 @@ print('args',args)
 
 
 train_dataset = MixedTemporalDataset(args.train_paths, args.ntrain_list, res=args.res, t_in = args.T_in, t_ar = args.T_ar, normalize=False,train=True, data_weights=args.data_weights, n_channels=args.n_channels)
-test_datasets = [MixedTemporalDataset(test_path, [args.ntest_list[i]], res=args.res, n_channels = train_dataset.n_channels,t_in = args.T_in, t_ar=-1, normalize=False, train=False) for i, test_path in enumerate(test_paths)]
+test_datasets = [MixedTemporalDataset(test_path, res=args.res, n_channels = train_dataset.n_channels,t_in = args.T_in, t_ar=-1, normalize=False, train=False) for i, test_path in enumerate(test_paths)]
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
 test_loaders = [torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,num_workers=8) for test_dataset in test_datasets]
 ntrain, ntests = len(train_dataset), [len(test_dataset) for test_dataset in test_datasets]

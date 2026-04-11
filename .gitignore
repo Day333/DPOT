@@ -10,6 +10,8 @@ logs/
 dataset_config.csv
 test.sh
 
+logs_pretrain/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

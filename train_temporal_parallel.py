@@ -1,6 +1,7 @@
 import sys
 import os
-sys.path.append(['.','./../'])
+# sys.path.append(['.','./../'])
+sys.path.extend(['.', './../'])
 os.environ ['OMP_NUM_THREADS'] = '16'
 
 import json
@@ -117,8 +118,8 @@ if __name__ == "__main__":
 
     train_dataset = MixedTemporalDataset(args.train_paths, args.ntrain_list, res=args.res, t_in = args.T_in, t_ar = args.T_ar, normalize=False,train=True,data_weights=args.data_weights)
     test_datasets = [MixedTemporalDataset(test_path, res=args.res, n_channels = train_dataset.n_channels,t_in = args.T_in, t_ar=-1, normalize=False, train=False) for test_path in test_paths]
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=12)
-    test_loaders = [torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, drop_last=False, shuffle=False,num_workers=12) for test_dataset in test_datasets]
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    test_loaders = [torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, drop_last=False, shuffle=False,num_workers=4) for test_dataset in test_datasets]
     ntrain, ntests = len(train_dataset), [len(test_dataset) for test_dataset in test_datasets]
     print('Train num {} test num {}'.format(train_dataset.n_sizes, ntests))
     ################################################################

@@ -117,7 +117,22 @@ python -m pip install timm einops tensorboard
   - `darcy/`
   - `ns2d/`
 
+### 代码中的命名约定
 
+在代码中，我们使用与原始数据集不同的标识符来引用这些数据集。映射关系请参见下表，具体的预处理过程请参考 `data_generation/preprocess.py`：
+
+| 代码标识符 | 原始数据集 |
+| :--- | :--- |
+| ns2d_fno_1e-5 | NavierStokes_V1e-5_N1200_T20 |
+| ns2d_fno_1e-4 | NavierStokes_V1e-4_N10000_T30 |
+| ns2d_fno_1e-3 | NavierStokes_V1e-3_N5000_T50 |
+| ns2d_pdb_M1e-1_eta1e-2_zeta1e-2 | 2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5 |
+| ns2d_pdb_M1_eta1e-2_zeta1e-2 | 2D_CFD_Rand_M1.0_Eta0.01_Zeta0.01_periodic_128_Train.hdf5 |
+| swe_pdb | 2D_rdb_NA_NA.h5 |
+| dr_pdb | 2D_diff-react_NA_NA.h5 |
+| cfdbench | CFDBench |
+| ns2d_pda | NavierStokes-2D |
+| ns2d_cond_pda | NavierStokes-2D-conditoned |
 
 ### 引用
 
@@ -141,3 +156,57 @@ huggingface-cli download chen-yingfa/CFDBench  --repo-type dataset --local-dir .
 
 
 https://drive.google.com/file/d/1XuApoADS4Qt5J35F7QmBCm5SKpR9227z/view?usp=sharing
+
+https://drive.google.com/file/d/19WwUQAPoofiRIb9fbeLyDO4OsdviuJuQ/view?usp=sharing
+
+https://drive.google.com/file/d/1lVgpWMjv9Z6LEv3eZQ_Qgj54lYeqnGl5/view?usp=sharing
+
+https://drive.google.com/file/d/1S1YSb3pFyQzOqe3eeHO7Sn1l6YmCXIOj/view?usp=sharing
+
+
+
+```bash
+cd /mnt/9944/PDE/CFDBench
+
+echo "开始一键解压 CFDBench 数据集..."
+
+# 1. 解压外层压缩包 (cavity, tube, dam, cylinder)
+for outer in cavity tube dam cylinder; do
+    if [ -f "${outer}.zip" ]; then
+        echo "📦 正在解压外层: ${outer}.zip"
+        unzip -qo "${outer}.zip" -d "${outer}"
+    fi
+done
+
+# 2. 遍历进入每个文件夹，安全解压内层的 bc.zip, geo.zip, prop.zip
+for dir in cavity tube dam cylinder; do
+    if [ -d "$dir" ]; then
+        echo "📂 正在处理 ${dir} 内部文件..."
+        cd "$dir"
+        
+        for inner in bc geo prop; do
+            if [ -f "${inner}.zip" ]; then
+                echo "   -> 安全解压 ${inner}.zip"
+                # 先解压到临时文件夹，防止文件直接散落在当前目录互相覆盖
+                unzip -qo "${inner}.zip" -d "${inner}_tmp"
+                
+                # 智能移动：如果压缩包本身自带了一层同名文件夹，就挪出来；如果没有，就把临时文件夹重命名
+                if [ -d "${inner}_tmp/${inner}" ]; then
+                    mv "${inner}_tmp/${inner}" ./
+                    rm -rf "${inner}_tmp"
+                else
+                    mv "${inner}_tmp" "${inner}"
+                fi
+                
+                # 解压成功后，删掉原压缩包节省你的硬盘空间（如果不想删可以注释掉下面这行）
+                rm "${inner}.zip"
+            fi
+        done
+        cd ..
+    fi
+done
+
+echo "✅ CFDBench 全部解压并整理完毕！目录结构已完美适配 DPOT。"
+```
+
+https://drive.google.com/file/d/1V_wLWLon-V8jWl2i7JEAQLJX4Bg9upYR/view?usp=sharing
