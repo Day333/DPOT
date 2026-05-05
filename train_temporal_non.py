@@ -205,47 +205,57 @@ for ep in range(args.epochs):
         yy = yy.to(device)  ## B, n, n, T_ar, C
         msk = msk.to(device)
         cls = cls.to(device)
+        
+        loss, cls_loss = 0. , 0.
+        T_target = yy.shape[-2]
+        pred_list = []
         # print("xx: ", xx.shape)
         # print("yy: ", yy.shape)
         # print("msk: ", msk.shape)
         # print("cls: ", cls.shape)
-        # print("cls: ", cls)
-
-        # a = range(0, yy.shape[-2], args.T_bundle)
-        # print(a)
+        # print("T_target: ", T_target)
         # raise ValueError("hahahah")
-        ## auto-regressive training loop, support 1. noise injection, 2. long rollout backward, 3. temporal bundling prediction
-        for t in range(0, yy.shape[-2], args.T_bundle):
-            y = yy[..., t:t + args.T_bundle, :]
-            # print("y: ", y.shape)
-            # raise ValueError("hahahah")
-
-            ### auto-regressive training
-            xx = xx + args.noise_scale *torch.sum(xx**2, dim=(1,2,3),keepdim=True)**0.5 * torch.randn_like(xx)
-            im, cls_pred = model(xx)
-            loss += myloss(im, y, mask=msk)
-            # a = torch.sum(xx**2, dim=(1,2,3),keepdim=True)**0.5 * torch.randn_like(xx)
-            # print("im: ", im.shape)
-            # raise ValueError("hahahah")
-
-            ### classification
-            pred_labels = torch.argmax(cls_pred,dim=1)
+        for t in range(0, T_target, args.T_bundle):
+            
+            xx_noisy = xx + args.noise_scale * torch.sum(xx**2, dim=(1,2,3),keepdim=True)**0.5 * torch.randn_like(xx)
+            
+            im, cls_pred = model(xx_noisy)
+            
+            pred_labels = torch.argmax(cls_pred, dim=1)
             cls_loss += clsloss(cls_pred, cls.squeeze())
             cls_correct += (pred_labels == cls.squeeze()).sum().item()
             cls_total += cls.shape[0]
 
-            if t == 0:
-                pred = im
-            else:
-                pred = torch.cat((pred, im), dim=-2)
+            pred_list.append(im)
+            
             xx = torch.cat((xx[..., args.T_bundle:, :], im), dim=-2)
+            
+        full_pred = torch.cat(pred_list, dim=-2)
+        
+        pred = full_pred[..., :T_target, :]
+        
+        if msk is not None:
+            pred_for_fft = pred * msk
+            yy_for_fft = yy * msk
+        else:
+            pred_for_fft = pred
+            yy_for_fft = yy
+        
+        pred_feq = torch.fft.rfft2(pred_for_fft, dim=(1, 2), norm="ortho")
+        yy_feq = torch.fft.rfft2(yy_for_fft, dim=(1, 2), norm="ortho")
+        
+        diff_feq_norms = torch.norm((pred_feq - yy_feq).reshape(pred.shape[0], -1), p=2, dim=1)
+        yy_feq_norms = torch.norm(yy_feq.reshape(pred.shape[0], -1), p=2, dim=1) + 1e-8
+        
+        loss_feq = torch.sum(diff_feq_norms / yy_feq_norms)
+                        
+        loss = 0.5 * myloss(pred, yy, mask=msk) + 0.5 * loss_feq
+        
+        train_l2_step += loss.item()
+        train_l2_full += loss.item()
 
         # print("pred: ", pred.shape)
         # raise ValueError("hahahah")
-
-        train_l2_step += loss.item()
-        l2_full = myloss(pred, yy, mask=msk)
-        train_l2_full += l2_full.item()
 
         optimizer.zero_grad()
         total_loss = loss  # + 1.0 * cls_loss
@@ -259,11 +269,13 @@ for ep in range(args.epochs):
         cls_acc = cls_correct / cls_total
         iter +=1
         if args.use_writer:
-            writer.add_scalar("train_loss_step", loss.item()/(xx.shape[0] * yy.shape[-2] / args.T_bundle), iter)
-            writer.add_scalar("train_loss_full", l2_full / xx.shape[0], iter)
+            batch_loss_avg = loss.item() / xx.shape[0]
+            writer.add_scalar("train_loss_step", batch_loss_avg, iter)
+            writer.add_scalar("train_loss_full", batch_loss_avg, iter)
 
             ## reset model
-            if loss.item() > 10 * loss_previous : # or (ep > 50 and l2_full / xx.shape[0] > 0.9):
+            if loss.item() > 10 * loss_previous:
+            ## reset model
                 print('loss explodes, loading model from previous epoch')
                 checkpoint = torch.load(model_path,map_location='cuda:{}'.format(args.gpu))
                 model.load_state_dict(checkpoint['model'])
@@ -272,8 +284,6 @@ for ep in range(args.epochs):
 
         t_train += default_timer() -  t_1
         t_1 = default_timer()
-
-
 
     test_l2_fulls, test_l2_steps = [], []
     with torch.no_grad():
@@ -291,20 +301,21 @@ for ep in range(args.epochs):
 
                 # raise ValueError("hahahah")
 
-                for t in range(0, yy.shape[-2], args.T_bundle):
-                    y = yy[..., t:t + args.T_bundle, :]
+                T_target = yy.shape[-2]
+                pred_list = []
+                
+                for t in range(0, T_target, args.T_bundle):
                     im, _ = model(xx)
-                    loss += myloss(im, y, mask=msk)
-
-                    if t == 0:
-                        pred = im
-                    else:
-                        pred = torch.cat((pred, im), -2)
-
+                    pred_list.append(im)
                     xx = torch.cat((xx[..., args.T_bundle:,:], im), dim=-2)
 
+                full_pred = torch.cat(pred_list, dim=-2)
+                pred = full_pred[..., :T_target, :]
+
+                loss = myloss(pred, yy, mask=msk)
+                
                 test_l2_step += loss.item()
-                test_l2_full += myloss(pred, yy, mask=msk)
+                test_l2_full += loss.item()
 
             test_l2_step_avg, test_l2_full_avg = test_l2_step / ntests[id] / (yy.shape[-2] / args.T_bundle), test_l2_full / ntests[id]
             test_l2_steps.append(test_l2_step_avg)

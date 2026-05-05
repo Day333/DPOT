@@ -33,8 +33,6 @@ class SimpleLpLoss(_WeightedLoss):
         self.size_average = size_average
         self.return_comps = return_comps
 
-
-
     def forward(self, x, y, mask=None):
         num_examples = x.size()[0]
 
@@ -59,6 +57,7 @@ class SimpleLpLoss(_WeightedLoss):
                 return torch.sum(torch.sum(diff_norms/y_norms, dim=-1) / msk_channels)    #### go this branch
         else:
             return torch.sum(diff_norms/y_norms, dim=-1) / msk_channels
+        
         ## Lp loss 2, channel average
         # diff_norms = torch.norm(x.reshape(num_examples, -1, x.shape[-1]) - y.reshape(num_examples, -1, x.shape[-1]),self.p, 1)
         # y_norms = torch.norm(y.reshape(num_examples, -1, x.shape[-1]), self.p, 1)
@@ -67,6 +66,7 @@ class SimpleLpLoss(_WeightedLoss):
         #         return torch.mean(diff_norms / y_norms)
         #     else:
         #         return torch.sum(torch.mean(diff_norms / y_norms,dim=1))  #### go this branch
+        
         if self.return_comps:
             if self.size_average:
                 return torch.mean(diff_norms/y_norms,dim=0)

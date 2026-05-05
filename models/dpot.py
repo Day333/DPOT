@@ -18,7 +18,46 @@ from einops.layers.torch import Rearrange
 
 ACTIVATION = {'gelu':nn.GELU(),'tanh':nn.Tanh(),'sigmoid':nn.Sigmoid(),'relu':nn.ReLU(),'leaky_relu':nn.LeakyReLU(0.1),'softplus':nn.Softplus(),'ELU':nn.ELU(),'silu':nn.SiLU()}
 
+class TemporalDecoder(nn.Module):
+    def __init__(self, in_channels, out_channels, out_timesteps, act='gelu'):
+        super(TemporalDecoder, self).__init__()
+        self.out_channels = out_channels
+        self.out_timesteps = out_timesteps
+        self.act = ACTIVATION[act]
+        
+        # 1. 空间与特征映射：从隐层维度映射到基础的目标维度
+        self.channel_proj = nn.Conv2d(in_channels, out_channels * out_timesteps, kernel_size=1, stride=1)
+        
+        # 2. 核心：显式的时间轴混合 (Time-Mixing)
+        # 这是一个小型的 MLP，专门作用于时间维度，打破原本的时间步独立性
+        self.time_mixer = nn.Sequential(
+            nn.Linear(out_timesteps, out_timesteps * 2),
+            self.act,
+            nn.Linear(out_timesteps * 2, out_timesteps)
+        )
 
+    def forward(self, x):
+        # x: [B, in_channels, X, Y]
+        x = self.channel_proj(x)  # -> [B, out_channels * out_timesteps, X, Y]
+        
+        B, _, X, Y = x.shape
+        
+        # 显式拆解出物理通道(C)和时间通道(T)
+        # -> [B, out_channels, out_timesteps, X, Y]
+        x = x.view(B, self.out_channels, self.out_timesteps, X, Y)
+        
+        # 维度重排：把 out_timesteps 放到最后一个维度，让 Linear 专门对其进行混合
+        # -> [B, X, Y, out_channels, out_timesteps]
+        x = x.permute(0, 3, 4, 1, 2)
+        
+        # 沿时间轴混合，建立 T=1, T=2 ... T=10 之间的跨步依赖
+        x = self.time_mixer(x)
+        
+        # 最后调整为 DPOT 期望的输出形状 -> [B, X, Y, out_timesteps, out_channels]
+        x = x.transpose(-1, -2).contiguous()
+        
+        return x
+    
 class AFNO2D(nn.Module):
     """
     hidden_size: channel dimension size
@@ -151,8 +190,6 @@ class Block(nn.Module):
 
         self.norm2 = torch.nn.GroupNorm(8, width)
 
-
-
         mlp_hidden_dim = int(width * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Conv2d(in_channels=width, out_channels=mlp_hidden_dim, kernel_size=1, stride=1),
@@ -166,7 +203,6 @@ class Block(nn.Module):
         residual = x
         x = self.norm1(x)
         x = self.filter(x)
-
 
         if self.double_skip:
             x = x + residual
@@ -185,6 +221,7 @@ class PatchEmbed(nn.Module):
         super().__init__()
         # img_size = to_2tuple(img_size)
         # patch_size = to_2tuple(patch_size)
+        self.patch_size = patch_size
         img_size = (img_size, img_size)
         patch_size = (patch_size, patch_size)
         num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
@@ -203,6 +240,9 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
+        # print("patch_size: ", self.patch_size)
+        # print("x: ", x.shape)
+        # raise ValueError
         assert H == self.img_size[0] and W == self.img_size[1], f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         # x = self.proj(x).flatten(2).transpose(1, 2)
         x = self.proj(x)
@@ -222,6 +262,7 @@ class TimeAggregator(nn.Module):
         elif self.type == 'exp_mlp':
             self.w = nn.Parameter(1/(n_timesteps * out_channels**0.5) *torch.randn(n_timesteps, out_channels, out_channels),requires_grad=True)   # initialization could be tuned
             self.gamma = nn.Parameter(2**torch.linspace(-10,10, out_channels).unsqueeze(0),requires_grad=True)  # 1, C
+
     ##  B, X, Y, T, C
     def forward(self, x):
         if self.type == 'mlp':
@@ -320,7 +361,21 @@ class DPOTNet(nn.Module):
             nn.Conv2d(in_channels=out_layer_dim, out_channels=self.out_channels * self.out_timesteps,kernel_size=1, stride=1)
         )
 
-
+        # ### 拆分为空间解码器和时间解码器
+        # self.out_layer_spatial = nn.Sequential(
+        #     nn.ConvTranspose2d(in_channels=embed_dim, out_channels=out_layer_dim, kernel_size=patch_size, stride=patch_size),
+        #     self.act,
+        #     nn.Conv2d(in_channels=out_layer_dim, out_channels=out_layer_dim, kernel_size=1, stride=1),
+        #     self.act
+        # )
+        
+        # # 引入新建的时间解码器
+        # self.temporal_decoder = TemporalDecoder(
+        #     in_channels=out_layer_dim, 
+        #     out_channels=self.out_channels, 
+        #     out_timesteps=self.out_timesteps, 
+        #     act=act
+        # )
 
         torch.nn.init.trunc_normal_(self.pos_embed, std=.02)
         self.mixing_type = mixing_type
@@ -351,8 +406,10 @@ class DPOTNet(nn.Module):
         batchsize, size_x, size_y, size_z = x.shape[0], x.shape[1], x.shape[2], x.shape[3]
         gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1, 1).to(x.device).repeat([batchsize, 1, size_y, size_z, 1])
+
         gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1, 1).to(x.device).repeat([batchsize, size_x, 1, size_z, 1])
+        
         gridz = torch.tensor(np.linspace(0, 1, size_z), dtype=torch.float)
         gridz = gridz.reshape(1, 1, 1, size_z, 1).to(x.device).repeat([batchsize, size_x, size_y, 1, 1])
 
@@ -363,44 +420,75 @@ class DPOTNet(nn.Module):
     ### in/out: B, X, Y, T, C
     def forward(self, x):
         B, _, _, T, _ = x.shape
+        # torch.Size([32, 128, 128, 10, 1]
+        # print("X: ", x.shape)
         # [Batch, X, Y, T, C]
         if self.normalize:
             mu, sigma = x.mean(dim=(1,2,3),keepdim=True), x.std(dim=(1,2,3),keepdim=True) + 1e-6    # B,1,1,1,C
             x = (x - mu)/ sigma
             scale_mu = self.scale_feats_mu(torch.cat([mu, sigma],dim=-1)).squeeze(-2).permute(0,3,1,2)   #-> B, C, 1, 1
             scale_sigma = self.scale_feats_sigma(torch.cat([mu, sigma], dim=-1)).squeeze(-2).permute(0, 3, 1, 2)
-
-        # print("x: ", x.shape)
+        # print("scale_mu: ", scale_mu)
+        # print("x: ", x.shape)   
+        # raise ValueError("boom!")
+        
         grid = self.get_grid_3d(x)
         # print("grid: ", grid.shape)
+        # raise ValueError("boom!")
+
         x = torch.cat((x, grid), dim=-1).contiguous() # B, X, Y, T, C+3
         # print("x after: ", x.shape)
         # raise ValueError
         x = rearrange(x, 'b x y t c -> (b t) c x y')
+        # print("x re arrange: ", x.shape)
         x = self.patch_embed(x)
+        # print("x patchembed: ", x.shape)
+        # raise ValueError("boom!")
+        x = x + self.pos_embed 
 
-        x = x + self.pos_embed
+        # print("self.pos_embed: ", self.pos_embed.shape)
+        # raise ValueError("boom!")
 
         x = rearrange(x, '(b t) c x y -> b x y t c', b=B, t=T)
 
+        # print("x: ", x.shape)
+        # torch.Size([32, 16, 16, 10, 512])
+        
         x = self.time_agg_layer(x)
-
+        # print("x: ", x.shape)
+        # torch.Size([32, 16, 16, 512])
+        # raise ValueError("boom!")
         x = rearrange(x, 'b x y c -> b c x y')
-
+        # print("x: ", x.shape)
+        # torch.Size([32, 512, 16, 16])
+        # raise ValueError("boom!")
         if self.normalize:
             x = scale_sigma * x + scale_mu   ### Ada_in layer
 
         for blk in self.blocks:
             x = blk(x)
 
-
+        # print("x: ", x.shape)
+        # raise ValueError("boom!")
 
         cls_token = x.mean(dim=(2, 3), keepdim=False)
         cls_pred = self.cls_head(cls_token)
+        # print("x: ", x.shape)
 
+        # origin
         x = self.out_layer(x).permute(0, 2, 3, 1)
+        # print("x: ", x.shape)
+        # raise ValueError("boom!")
         x = x.reshape(*x.shape[:3], self.out_timesteps, self.out_channels).contiguous()
 
+        # ·· 新的解码流程：先空间解码，再时间解码 ··
+        # 1. 空间分辨率上采样与特征解码
+        # x = self.out_layer_spatial(x)
+        # 2. 时序信息混合并直接输出最终形状 [B, X, Y, T, C]
+        # x = self.temporal_decoder(x)
+
+        # print("x: ", x.shape)
+        # raise ValueError("boom!")
         if self.normalize:
             x = x * sigma  + mu
 

@@ -65,6 +65,7 @@ python train_temporal.py --model DPOT --train_paths ns2d_fno_1e-5 --test_paths n
 
 ```bash
 python trainer.py --config_file ns2d.yaml
+python trainer.py --config_file dpot_evaluate.yaml
 ```
 
 ##### 多 GPU 预训练
