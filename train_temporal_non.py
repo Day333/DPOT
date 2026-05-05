@@ -81,10 +81,14 @@ parser.add_argument('--warmup_epochs',type=int, default=100)
 parser.add_argument('--T_in', type=int, default=10)
 parser.add_argument('--T_ar', type=int, default=1)
 parser.add_argument('--T_bundle', type=int, default=1)
+parser.add_argument('--freq_loss_weight', type=float, default=0.5,
+                    help='Weight for the frequency-domain loss. Spatial loss weight is 1 - freq_loss_weight.')
 parser.add_argument('--gpu', type=str, default="5")
 parser.add_argument('--comment',type=str, default="")
 parser.add_argument('--log_path',type=str,default='')
 args = parser.parse_args()
+if not 0.0 <= args.freq_loss_weight <= 1.0:
+    raise ValueError(f'freq_loss_weight must be in [0, 1], got {args.freq_loss_weight}')
 
 
 device = torch.device("cuda:{}".format(args.gpu))
@@ -249,7 +253,8 @@ for ep in range(args.epochs):
         
         loss_feq = torch.sum(diff_feq_norms / yy_feq_norms)
                         
-        loss = 0.5 * myloss(pred, yy, mask=msk) + 0.5 * loss_feq
+        loss_spatial = myloss(pred, yy, mask=msk)
+        loss = (1.0 - args.freq_loss_weight) * loss_spatial + args.freq_loss_weight * loss_feq
         
         train_l2_step += loss.item()
         train_l2_full += loss.item()
